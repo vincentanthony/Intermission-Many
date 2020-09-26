@@ -1,57 +1,100 @@
 gl.setup(NATIVE_WIDTH, NATIVE_HEIGHT)
-
-local raw = sys.get_ext "raw_video"
-local loop = raw.load_video{file="intermission.mp4", looped=true}
-
-local function pause_loop()
-    loop:target(-1, -1, -1, -1):stop()
-end
-
-local function play_loop()
-    loop:target(0, 0, WIDTH, HEIGHT):layer(-2):start()
-end
-
-local intermission
-local next_intermission
-
 node.alias "looper"
 
-util.data_mapper{
-    play = function(file)
-        -- load the next intermission. If there is already one
-        -- loading, abort loading now and replace it with the
-        -- new video.
-        if next_intermission then
-            next_intermission:dispose()
+-- This version uses low level video playback 
+-- if this line isn't commented.
+local raw = sys.get_ext "raw_video"
+
+if raw then
+    loader = raw.load_video
+else
+    loader = resource.load_video
+end
+
+local Looper = function(file)
+    local vid = loader(file, true, true)
+    local function draw()
+        if not raw then
+            util.draw_correct(vid, 0, 0, WIDTH, HEIGHT)
         end
-        next_intermission = raw.load_video(file)
-        next_intermission:target(0, 0, WIDTH, HEIGHT):layer(-3)
+        return true
     end
+    local function set_running(running)
+        if running then
+            if raw then vid:target(0, 0, WIDTH, HEIGHT):layer(-1) end
+            vid:start()
+        else
+            vid:stop()
+            if raw then vid:target(0, 2000, 0, 2000) end -- move video layer away
+        end
+    end
+    return {
+        draw = draw;
+        set_running = set_running;
+    }
+end
+
+local Intermission = function(file)
+    local vid = resource.create_colored_texture(0, 0, 0, 0)
+    local function draw()
+        if not raw then
+            util.draw_correct(vid, 0, 0, WIDTH, HEIGHT)
+        end
+        return vid:state() ~= "finished"
+    end
+    local function preload()
+        if vid then vid:dispose() end
+        vid = loader(file, true, false, true)
+    end
+    local function set_running(running)
+        if running then
+            if raw then vid:target(0, 0, WIDTH, HEIGHT):layer(-1) end
+            vid:start()
+        else
+            preload()
+        end
+    end
+
+    preload()
+
+    return {
+        draw = draw;
+        set_running = set_running;
+    }
+end
+
+local loop = Looper "intermission.mp4"
+local intermission = Intermission "monstermash.mp4"
+
+local surface
+
+local function start_loop()
+    loop.set_running(true)
+    intermission.set_running(false)
+    surface = loop
+end
+
+local function start_intermission()
+    intermission.set_running(true)
+    loop.set_running(false)
+    surface = intermission
+end
+
+util.data_mapper{
+    ["set"] = function(new_mode)
+        if new_mode == "loop" then
+            start_loop()
+        else
+            start_intermission()
+        end
+    end;
 }
 
-play_loop()
+start_loop()
 
 function node.render()
-    gl.clear(0,0,0,0)
-    if next_intermission and next_intermission:state() == "loaded" then
-        -- next intermission finished loading? Then stop any
-        -- intermission that is currently running and replace
-        -- it with the next one.
-        if intermission then
-            intermission:dispose()
-        end
-        intermission = next_intermission
-        intermission:layer(-1)
-        next_intermission = nil
-        pause_loop()
-    end
-
-    if intermission and intermission:state() ~= "loaded" then
-        -- intermission running and it ended? Then get rid of
-        -- the intermission video and resume playing the main
-        -- loop.
-        intermission:dispose()
-        intermission = nil
-        play_loop()
+    gl.clear(0, 0, 0, 0)
+    if not surface.draw() then
+        start_loop()
     end
 end
